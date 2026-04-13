@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.idea/
+.vscode/
+.venv/
+build/
+dist/
+*.spec
+*.log
+uv.lock
+output/
+workspace/

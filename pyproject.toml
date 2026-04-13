@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "goodpdf"
+version = "0.1.0"
+description = "Local cross-platform PDF processing desktop app"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "PySide6>=6.8",
+  "keyring>=25.6.0",
+  "marker-pdf",
+  "openai>=1.0",
+  "pillow>=10.0",
+  "pydantic>=2.8",
+  "pycountry>=24.6.1",
+]
+
+[project.optional-dependencies]
+packaging = [
+  "pyinstaller>=6.11",
+]
+
+[project.scripts]
+goodpdf = "goodpdf.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/goodpdf"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
