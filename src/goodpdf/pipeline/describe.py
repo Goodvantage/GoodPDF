@@ -9,6 +9,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
+from goodpdf.pipeline.captions import extract_image_captions
 from goodpdf.pipeline.jobs import LogFn
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
@@ -113,6 +114,26 @@ def write_description(doc_folder: Path, image_stem: str, description: str) -> No
     (doc_folder / f"{image_stem}.desc").write_text(description.strip() + "\n", encoding="utf-8")
 
 
+def find_markdown(doc_folder: Path) -> Path | None:
+    preferred = doc_folder / f"{doc_folder.name}.md"
+    if preferred.is_file():
+        return preferred
+    for candidate in sorted(doc_folder.iterdir()):
+        if candidate.is_file() and candidate.suffix.lower() in {".md", ".markdown"}:
+            return candidate
+    return None
+
+
+def read_caption_map(
+    doc_folder: Path, extra_caption_labels: tuple[str, ...] | list[str]
+) -> dict[str, str]:
+    markdown_path = find_markdown(doc_folder)
+    if markdown_path is None:
+        return {}
+    markdown_text = markdown_path.read_text(encoding="utf-8")
+    return extract_image_captions(markdown_text, extra_caption_labels)
+
+
 def iter_candidate_images(root: Path):
     for img in root.rglob("*"):
         if not img.is_file() or img.suffix.lower() not in IMAGE_EXTS:
@@ -128,16 +149,15 @@ def run_describe(
     model: str = MODEL,
     api_key: str | None = None,
     api_base: str | None = None,
+    extra_caption_labels: tuple[str, ...] | list[str] = (),
     emit: LogFn | None = None,
 ) -> DescribeSummary:
     if not root.is_dir():
         raise ValueError(f"not a directory: {root}")
     resolved_api_key = api_key or os.environ.get("OPENAI_API_KEY")
-    if not resolved_api_key:
-        raise RuntimeError("OPENAI_API_KEY env var is not set")
-
-    client = OpenAI(api_key=resolved_api_key, base_url=api_base or None)
+    client: OpenAI | None = None
     summary = DescribeSummary()
+    caption_maps: dict[Path, dict[str, str]] = {}
 
     for img in iter_candidate_images(root):
         doc_folder = img.parent.parent
@@ -147,6 +167,20 @@ def run_describe(
             summary.skipped += 1
             continue
         bucket, _ = triage
+        if bucket not in {"needs_llm", "index"}:
+            summary.skipped += 1
+            continue
+
+        if doc_folder not in caption_maps:
+            caption_maps[doc_folder] = read_caption_map(doc_folder, extra_caption_labels)
+        caption = caption_maps[doc_folder].get(img.name, "").strip()
+        if caption:
+            write_description(doc_folder, stem, caption)
+            write_triage(doc_folder, stem, "index", "caption_from_markdown")
+            summary.index += 1
+            _log(emit, f"CAPTION {img.relative_to(root)}: {caption[:100]}")
+            continue
+
         if bucket != "needs_llm":
             summary.skipped += 1
             continue
@@ -154,6 +188,11 @@ def run_describe(
             write_triage(doc_folder, stem, "index", "described_previously")
             summary.index += 1
             continue
+
+        if client is None:
+            if not resolved_api_key:
+                raise RuntimeError("OPENAI_API_KEY env var is not set")
+            client = OpenAI(api_key=resolved_api_key, base_url=api_base or None)
 
         try:
             result = call_model(client, img, model)

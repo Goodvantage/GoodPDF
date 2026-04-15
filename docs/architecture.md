@@ -34,15 +34,17 @@ Pipeline stages
 2. Run heavy work in subprocesses.
 3. Isolate each PDF conversion to avoid whole-job crashes.
 4. Keep cloud LLM usage optional and explicit.
-5. Produce the same cleaned zip format that Frappe already consumes.
+5. Prefer real markdown captions over generic vision alt text.
+6. Keep caption-label vocabulary data-driven so new languages only need label additions.
+7. Allow later pipeline stages to resume from an existing marker folder.
+8. Produce the same cleaned zip format that Frappe already consumes.
 
-## Planned Migration From Regen2
+## Current Pipeline Notes
 
-Move the current logic into modules in this order:
-
-1. `convert_pdfs.py`
-2. `scripts/preprocess/triage.py`
-3. `scripts/preprocess/describe.py`
-4. `scripts/preprocess/clean.py`
-
-The first milestone is feature parity with the existing command-line workflow.
+- Caption detection mirrors the WhatsApp app's block-based marker caption extractor,
+  but GoodPDF converts matched captions into plain text for `.desc` sidecars.
+- `describe` is caption-first and only falls back to OpenAI vision when the markdown
+  does not provide a usable caption.
+- Resume jobs can start from `Triage`, `Describe`, or `Clean` against any existing
+  marker folder while still writing a new cleaned/archive/report job under the
+  configured workspace.

@@ -3,7 +3,6 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, Signal, Slot
 
 from goodpdf.pipeline.jobs import JobRequest, PipelineStage
-from goodpdf.pipeline.runner import run_pipeline
 
 
 class PipelineWorker(QObject):
@@ -19,6 +18,8 @@ class PipelineWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
+            from goodpdf.pipeline.runner import run_pipeline
+
             result = run_pipeline(
                 self.request,
                 emit=self.log.emit,

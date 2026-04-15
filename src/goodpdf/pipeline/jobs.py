@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+import re
 from typing import Callable
 
 import pycountry
@@ -44,6 +45,11 @@ class PipelineStage(StrEnum):
 
 
 PIPELINE_STAGES = [stage.value for stage in PipelineStage]
+RESUME_START_STAGES = (
+    PipelineStage.TRIAGE,
+    PipelineStage.DESCRIBE,
+    PipelineStage.CLEAN,
+)
 LogFn = Callable[[str], None]
 StageFn = Callable[[PipelineStage], None]
 
@@ -71,12 +77,40 @@ class JobRequest:
     language: str = "en"
     use_cloud_descriptions: bool = True
     output_root: Path | None = None
+    existing_marker_root: Path | None = None
+    start_stage: PipelineStage = PipelineStage.EXTRACT
+    additional_caption_labels: list[str] = field(default_factory=list)
     llm_model: str = "gpt-4o-mini"
     llm_api_key: str | None = None
     llm_api_base: str | None = None
 
     def normalized_language(self) -> str:
         return normalize_language_code(self.language)
+
+    def is_resume(self) -> bool:
+        return self.existing_marker_root is not None
+
+    def resolved_existing_marker_root(self) -> Path | None:
+        if self.existing_marker_root is None:
+            return None
+        return self.existing_marker_root.expanduser().resolve()
+
+    def validate(self) -> None:
+        if self.is_resume():
+            marker_root = self.resolved_existing_marker_root()
+            if self.start_stage == PipelineStage.EXTRACT:
+                raise ValueError(
+                    "Choose PDFs to start from extraction, or choose Triage, Describe, or Clean for an existing marker folder."
+                )
+            if marker_root is None or not marker_root.is_dir():
+                raise ValueError("Choose an existing marker folder.")
+            if self.start_stage == PipelineStage.DESCRIBE and not self.use_cloud_descriptions:
+                raise ValueError("Enable cloud image descriptions to start at Describe.")
+            return
+
+        if self.start_stage != PipelineStage.EXTRACT:
+            raise ValueError("An existing marker folder is required to start after extraction.")
+        self.validated_pdfs()
 
     def validated_pdfs(self) -> list[Path]:
         pdfs = [path.expanduser().resolve() for path in self.source_pdfs]
@@ -128,14 +162,30 @@ class JobResult:
     errors: list[str] = field(default_factory=list)
 
 
+def _safe_path_component(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
+    normalized = normalized.strip("._-")
+    return normalized or "marker"
+
+
 def build_job_paths(request: JobRequest, default_workspace: Path) -> JobPaths:
     workspace_root = (request.output_root or default_workspace).expanduser().resolve()
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     language_code = request.normalized_language()
-    job_id = f"{timestamp}_{language_code}_{len(request.source_pdfs)}pdfs"
-    job_root = workspace_root / "jobs" / job_id
-    source_dir = job_root / "source"
-    marker_dir = job_root / "marker"
+    if request.is_resume():
+        marker_dir = request.resolved_existing_marker_root()
+        if marker_dir is None:
+            raise ValueError("Missing marker folder for resume job.")
+        marker_name = _safe_path_component(marker_dir.name)
+        stage_name = request.start_stage.name.lower()
+        job_id = f"{timestamp}_{language_code}_{marker_name}_{stage_name}_resume"
+        job_root = workspace_root / "jobs" / job_id
+        source_dir = job_root / "source"
+    else:
+        job_id = f"{timestamp}_{language_code}_{len(request.source_pdfs)}pdfs"
+        job_root = workspace_root / "jobs" / job_id
+        source_dir = job_root / "source"
+        marker_dir = job_root / "marker"
     cleaned_dir = job_root / "cleaned"
     archive_dir = job_root / "archive"
     reports_dir = job_root / "reports"

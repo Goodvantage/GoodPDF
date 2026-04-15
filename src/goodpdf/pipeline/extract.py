@@ -11,11 +11,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-
-from marker.config.parser import ConfigParser
-from marker.converters.pdf import PdfConverter
-from marker.models import create_model_dict
-from marker.output import text_from_rendered
+from typing import Any
 
 from goodpdf.pipeline.jobs import LogFn, normalize_language_code
 
@@ -35,7 +31,11 @@ def _log(emit: LogFn | None, message: str) -> None:
         emit(message)
 
 
-def build_converter() -> PdfConverter:
+def build_converter() -> Any:
+    from marker.config.parser import ConfigParser
+    from marker.converters.pdf import PdfConverter
+    from marker.models import create_model_dict
+
     config_parser = ConfigParser({"output_format": "markdown"})
     return PdfConverter(
         config=config_parser.generate_config_dict(),
@@ -173,6 +173,8 @@ def convert_single_pdf(
     marker_root: Path,
     pdf_output_dir: Path,
 ) -> tuple[int, int]:
+    from marker.output import text_from_rendered
+
     converter = build_converter()
     rendered = converter(str(source_pdf))
     markdown, _, images = text_from_rendered(rendered)

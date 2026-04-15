@@ -23,7 +23,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from goodpdf.pipeline.jobs import JobRequest, JobResult, PIPELINE_STAGES, language_options
+from goodpdf.pipeline.captions import DEFAULT_CAPTION_LABELS, parse_caption_labels_text
+from goodpdf.pipeline.jobs import (
+    PIPELINE_STAGES,
+    RESUME_START_STAGES,
+    JobRequest,
+    JobResult,
+    PipelineStage,
+    language_options,
+)
 from goodpdf.settings import clear_api_key, load_api_key, save_api_key
 from goodpdf.settings.config import AppConfig
 from goodpdf.workers.pipeline_worker import PipelineWorker
@@ -154,6 +162,14 @@ class MainWindow(QMainWindow):
             self.language_combo.setCurrentIndex(default_index)
         self.language_combo.currentIndexChanged.connect(self._save_settings)
 
+        start_mode_label = QLabel("Start from")
+        start_mode_label.setStyleSheet("font-weight: 600;")
+        self.start_mode_combo = QComboBox()
+        self.start_mode_combo.addItem("PDFs (full pipeline)", "pdfs")
+        self.start_mode_combo.addItem("Existing marker folder", "existing")
+        self.start_mode_combo.currentIndexChanged.connect(self._handle_start_mode_change)
+        self.start_mode_combo.currentIndexChanged.connect(self._save_settings)
+
         self.describe_checkbox = QCheckBox("Enable cloud image descriptions")
         self.describe_checkbox.setChecked(True)
         self.describe_checkbox.toggled.connect(self._handle_cloud_toggle)
@@ -163,13 +179,15 @@ class MainWindow(QMainWindow):
         self.settings_summary_label.setWordWrap(True)
         self.settings_summary_label.setStyleSheet("color: #666;")
 
+        job_layout.addWidget(start_mode_label)
+        job_layout.addWidget(self.start_mode_combo)
         job_layout.addWidget(language_label)
         job_layout.addWidget(self.language_combo)
         job_layout.addWidget(self.describe_checkbox)
         job_layout.addWidget(self.settings_summary_label)
 
-        pdf_group = QGroupBox("PDFs")
-        pdf_layout = QVBoxLayout(pdf_group)
+        self.pdf_group = QGroupBox("PDFs")
+        pdf_layout = QVBoxLayout(self.pdf_group)
         pdf_layout.setSpacing(12)
 
         pdf_controls = QHBoxLayout()
@@ -197,6 +215,42 @@ class MainWindow(QMainWindow):
         pdf_layout.addWidget(self.pdfs_label)
         pdf_layout.addWidget(self.pdf_drop_hint_label)
         pdf_layout.addWidget(self.pdfs, stretch=1)
+
+        self.resume_group = QGroupBox("Existing Extraction")
+        resume_layout = QVBoxLayout(self.resume_group)
+        resume_layout.setSpacing(12)
+
+        resume_path_label = QLabel("Marker folder")
+        resume_path_label.setStyleSheet("font-weight: 600;")
+        resume_path_row = QHBoxLayout()
+        resume_path_row.setSpacing(12)
+        self.existing_marker_root_input = QLineEdit()
+        self.existing_marker_root_input.setPlaceholderText("Choose an extracted marker folder")
+        self.existing_marker_root_input.textChanged.connect(self._save_settings)
+        self.choose_existing_marker_root_button = QPushButton("Choose Folder")
+        self.choose_existing_marker_root_button.clicked.connect(self._choose_existing_marker_root)
+        resume_path_row.addWidget(self.existing_marker_root_input)
+        resume_path_row.addWidget(self.choose_existing_marker_root_button)
+
+        resume_stage_label = QLabel("Start stage")
+        resume_stage_label.setStyleSheet("font-weight: 600;")
+        self.resume_stage_combo = QComboBox()
+        for stage in RESUME_START_STAGES:
+            self.resume_stage_combo.addItem(stage.value, stage.name)
+        self.resume_stage_combo.currentIndexChanged.connect(self._save_settings)
+
+        resume_hint = QLabel(
+            "Use an existing marker output folder and continue from Triage, Describe, or Clean. "
+            "GoodPDF will create a new cleaned zip job in the workspace and update sidecars in the selected marker folder."
+        )
+        resume_hint.setWordWrap(True)
+        resume_hint.setStyleSheet("color: #666;")
+
+        resume_layout.addWidget(resume_path_label)
+        resume_layout.addLayout(resume_path_row)
+        resume_layout.addWidget(resume_stage_label)
+        resume_layout.addWidget(self.resume_stage_combo)
+        resume_layout.addWidget(resume_hint)
 
         progress_group = QGroupBox("Pipeline Progress")
         progress_layout = QVBoxLayout(progress_group)
@@ -230,9 +284,11 @@ class MainWindow(QMainWindow):
         actions.addStretch(1)
 
         layout.addWidget(job_group)
-        layout.addWidget(pdf_group, stretch=1)
+        layout.addWidget(self.pdf_group, stretch=1)
+        layout.addWidget(self.resume_group, stretch=1)
         layout.addWidget(progress_group, stretch=1)
         layout.addLayout(actions)
+        self._update_start_mode_ui()
         return root
 
     def _build_settings_tab(self) -> QWidget:
@@ -305,6 +361,22 @@ class MainWindow(QMainWindow):
         cloud_hint.setWordWrap(True)
         cloud_hint.setStyleSheet("color: #666;")
 
+        labels_label = QLabel("Additional caption labels")
+        labels_label.setStyleSheet("font-weight: 600;")
+        self.additional_caption_labels_input = QPlainTextEdit()
+        self.additional_caption_labels_input.setPlaceholderText(
+            "One label per line, e.g. skema\ngrafik"
+        )
+        self.additional_caption_labels_input.setMaximumHeight(120)
+        self.additional_caption_labels_input.textChanged.connect(self._save_settings)
+
+        labels_hint = QLabel(
+            "Extend caption detection for new languages without changing the regex. "
+            f"Built-in labels: {', '.join(DEFAULT_CAPTION_LABELS)}."
+        )
+        labels_hint.setWordWrap(True)
+        labels_hint.setStyleSheet("color: #666;")
+
         cloud_layout.addWidget(api_base_label)
         cloud_layout.addWidget(self.llm_api_base_input)
         cloud_layout.addWidget(model_label)
@@ -313,6 +385,9 @@ class MainWindow(QMainWindow):
         cloud_layout.addWidget(self.llm_api_key_input)
         cloud_layout.addWidget(self.remember_api_key_checkbox)
         cloud_layout.addWidget(cloud_hint)
+        cloud_layout.addWidget(labels_label)
+        cloud_layout.addWidget(self.additional_caption_labels_input)
+        cloud_layout.addWidget(labels_hint)
 
         layout.addWidget(workspace_group)
         layout.addWidget(cloud_group)
@@ -330,6 +405,41 @@ class MainWindow(QMainWindow):
         self.config.workspace_dir = Path(selected)
         self.workspace_value_label.setText(str(self.config.workspace_dir))
         self._save_settings()
+
+    def _choose_existing_marker_root(self) -> None:
+        current = self.existing_marker_root_input.text().strip() or str(self.config.workspace_dir)
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Choose marker folder",
+            current,
+        )
+        if not selected:
+            return
+        self.existing_marker_root_input.setText(selected)
+
+    def _current_start_mode(self) -> str:
+        return self.start_mode_combo.currentData() or "pdfs"
+
+    def _selected_resume_stage(self) -> PipelineStage:
+        stage_name = self.resume_stage_combo.currentData() or PipelineStage.TRIAGE.name
+        return PipelineStage[stage_name]
+
+    def _additional_caption_labels(self) -> list[str]:
+        return list(parse_caption_labels_text(self.additional_caption_labels_input.toPlainText()))
+
+    def _handle_start_mode_change(self, _index: int) -> None:
+        self._update_start_mode_ui()
+        self._update_settings_summary()
+
+    def _update_start_mode_ui(self) -> None:
+        existing_mode = self._current_start_mode() == "existing"
+        self.pdf_group.setVisible(not existing_mode)
+        self.resume_group.setVisible(existing_mode)
+        self.resume_stage_combo.setEnabled(existing_mode and self.run_button.isEnabled())
+        self.existing_marker_root_input.setEnabled(existing_mode and self.run_button.isEnabled())
+        self.choose_existing_marker_root_button.setEnabled(
+            existing_mode and self.run_button.isEnabled()
+        )
 
     def _select_pdfs(self) -> None:
         files, _ = QFileDialog.getOpenFileNames(
@@ -378,19 +488,32 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(1)
             return
 
+        start_mode = self._current_start_mode()
+        existing_marker_root = (
+            Path(self.existing_marker_root_input.text().strip())
+            if start_mode == "existing" and self.existing_marker_root_input.text().strip()
+            else None
+        )
+        start_stage = (
+            self._selected_resume_stage() if start_mode == "existing" else PipelineStage.EXTRACT
+        )
+
         request = JobRequest(
-            source_pdfs=self.selected_pdfs,
+            source_pdfs=self.selected_pdfs if start_mode == "pdfs" else [],
             language=self.language_combo.currentData(),
             use_cloud_descriptions=self.describe_checkbox.isChecked(),
             output_root=self.config.workspace_dir,
+            existing_marker_root=existing_marker_root,
+            start_stage=start_stage,
+            additional_caption_labels=self._additional_caption_labels(),
             llm_model=self.llm_model_input.text().strip() or self.config.default_llm_model,
             llm_api_key=self.llm_api_key_input.text().strip() or None,
             llm_api_base=self.llm_api_base_input.text().strip() or None,
         )
         try:
-            request.validated_pdfs()
+            request.validate()
         except ValueError as exc:
-            QMessageBox.warning(self, "Invalid PDF selection", str(exc))
+            QMessageBox.warning(self, "Invalid pipeline settings", str(exc))
             return
 
         self.log_output.clear()
@@ -462,17 +585,24 @@ class MainWindow(QMainWindow):
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         cloud_enabled = enabled and self.describe_checkbox.isChecked()
+        existing_mode = self._current_start_mode() == "existing"
         self.language_combo.setEnabled(enabled)
+        self.start_mode_combo.setEnabled(enabled)
         self.describe_checkbox.setEnabled(enabled)
         self.llm_api_base_input.setEnabled(cloud_enabled)
         self.llm_model_input.setEnabled(cloud_enabled)
         self.llm_api_key_input.setEnabled(cloud_enabled)
         self.remember_api_key_checkbox.setEnabled(cloud_enabled)
+        self.additional_caption_labels_input.setEnabled(enabled)
         self.choose_workspace_button.setEnabled(enabled)
-        self.add_pdfs_button.setEnabled(enabled)
-        self.remove_selected_button.setEnabled(enabled)
-        self.clear_all_button.setEnabled(enabled)
+        self.add_pdfs_button.setEnabled(enabled and not existing_mode)
+        self.remove_selected_button.setEnabled(enabled and not existing_mode)
+        self.clear_all_button.setEnabled(enabled and not existing_mode)
+        self.existing_marker_root_input.setEnabled(enabled and existing_mode)
+        self.choose_existing_marker_root_button.setEnabled(enabled and existing_mode)
+        self.resume_stage_combo.setEnabled(enabled and existing_mode)
         self.run_button.setEnabled(enabled)
+        self._update_start_mode_ui()
 
     def _update_pdf_label(self) -> None:
         self.pdfs_label.setText(f"Selected PDFs: {len(self.selected_pdfs)}")
@@ -562,6 +692,11 @@ class MainWindow(QMainWindow):
             if self.describe_checkbox.isChecked()
             else "Cloud descriptions off"
         )
+        start_mode = (
+            "Existing marker folder"
+            if self._current_start_mode() == "existing"
+            else "Selected PDFs"
+        )
         provider_bits = []
         api_base = self.llm_api_base_input.text().strip()
         model = self.llm_model_input.text().strip()
@@ -576,9 +711,19 @@ class MainWindow(QMainWindow):
                 else "session API key set"
             )
         provider_text = " | ".join(provider_bits) if provider_bits else "No provider configured"
-        self.settings_summary_label.setText(
-            f"Workspace: {self.config.workspace_dir}\n{cloud_mode} | {provider_text}"
-        )
+        extra_label_count = len(self._additional_caption_labels())
+        details = [
+            f"Workspace: {self.config.workspace_dir}",
+            f"{start_mode} | {cloud_mode} | {provider_text}",
+        ]
+        if (
+            self._current_start_mode() == "existing"
+            and self.existing_marker_root_input.text().strip()
+        ):
+            details.append(f"Marker folder: {self.existing_marker_root_input.text().strip()}")
+        if extra_label_count:
+            details.append(f"Extra caption labels: {extra_label_count}")
+        self.settings_summary_label.setText("\n".join(details))
 
     def _load_settings(self) -> None:
         self._loading_settings = True
@@ -587,6 +732,20 @@ class MainWindow(QMainWindow):
         if workspace:
             self.config.workspace_dir = Path(workspace)
             self.workspace_value_label.setText(str(self.config.workspace_dir))
+
+        start_mode = self.settings.value("start_mode", "pdfs", type=str)
+        start_mode_index = self.start_mode_combo.findData(start_mode)
+        if start_mode_index >= 0:
+            self.start_mode_combo.setCurrentIndex(start_mode_index)
+
+        existing_marker_root = self.settings.value("existing_marker_root", "", type=str)
+        if existing_marker_root:
+            self.existing_marker_root_input.setText(existing_marker_root)
+
+        resume_stage = self.settings.value("resume_stage", PipelineStage.TRIAGE.name, type=str)
+        resume_stage_index = self.resume_stage_combo.findData(resume_stage)
+        if resume_stage_index >= 0:
+            self.resume_stage_combo.setCurrentIndex(resume_stage_index)
 
         language_code = self.settings.value("language", "en", type=str)
         language_index = self.language_combo.findData(language_code)
@@ -607,15 +766,28 @@ class MainWindow(QMainWindow):
         if remember_api_key:
             self.llm_api_key_input.setText(load_api_key(self.config))
 
+        self.additional_caption_labels_input.setPlainText(
+            self.settings.value("additional_caption_labels", "", type=str)
+        )
+
         self._loading_settings = False
+        self._update_start_mode_ui()
 
     def _save_settings(self) -> None:
         if self._loading_settings:
             return
         self.settings.setValue("workspace_dir", str(self.config.workspace_dir))
+        self.settings.setValue("start_mode", self._current_start_mode())
+        self.settings.setValue(
+            "existing_marker_root", self.existing_marker_root_input.text().strip()
+        )
+        self.settings.setValue("resume_stage", self.resume_stage_combo.currentData())
         self.settings.setValue("language", self.language_combo.currentData())
         self.settings.setValue("use_cloud_descriptions", self.describe_checkbox.isChecked())
         self.settings.setValue("llm_api_base", self.llm_api_base_input.text().strip())
         self.settings.setValue("llm_model", self.llm_model_input.text().strip())
         self.settings.setValue("remember_api_key", self.remember_api_key_checkbox.isChecked())
+        self.settings.setValue(
+            "additional_caption_labels", self.additional_caption_labels_input.toPlainText()
+        )
         self._update_settings_summary()

@@ -8,8 +8,6 @@ from pathlib import Path
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from goodpdf.app.window import MainWindow
-from goodpdf.pipeline.extract import run_internal_extract
 from goodpdf.settings.config import AppConfig
 
 
@@ -30,11 +28,15 @@ def main(argv: list[str] | None = None) -> int:
     multiprocessing.freeze_support()
     args = parse_args(argv)
     if args.internal_extract:
+        from goodpdf.pipeline.extract import run_internal_extract
+
         return run_internal_extract(
             language_code=args.internal_language_code,
             source_pdf=Path(args.internal_pdf).resolve(),
             marker_root=Path(args.internal_output_root).resolve(),
         )
+
+    from goodpdf.app.window import MainWindow
 
     app = QApplication(sys.argv)
     config = AppConfig.default()
